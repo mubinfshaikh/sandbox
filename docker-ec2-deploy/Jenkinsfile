@@ -5,9 +5,9 @@ pipeline {
     REGION  = 'ap-south-1'
     ACCOUNT = '664418953285'
     BUCKET  = 'cfl-wheelking-test-664418953285-ap-south-1-an'
-    CD_APP  = 'sample-app'
-    CD_DG   = 'sample-app-dg'
-    REPO    = "${ACCOUNT}.dkr.ecr.${REGION}.amazonaws.com/sample-app"
+    CD_APP  = 'wheelking-test-codedeploy'
+    CD_DG   = 'wheelking-test-app-dg'
+    REPO    = "${ACCOUNT}.dkr.ecr.${REGION}.amazonaws.com/wheelking-test"
   }
   stages {
     stage('Build') {
