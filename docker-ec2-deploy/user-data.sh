@@ -1,7 +1,7 @@
 #!/bin/bash
 # EC2 launch template user data (Ubuntu). Set REGION before use.
 set -e
-REGION=us-east-1
+REGION=ap-south-1
 apt-get update
 apt-get install -y docker.io ruby-full wget unzip curl
 systemctl enable --now docker
