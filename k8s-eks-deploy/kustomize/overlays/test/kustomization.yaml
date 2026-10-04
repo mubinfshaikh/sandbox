@@ -1,0 +1,16 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: sample-app-test
+resources: [../../base]
+images:
+  - name: 664418953285.dkr.ecr.ap-south-1.amazonaws.com/sample-app
+    newTag: "1"   # CI bumps this: kustomize edit set image 664418953285.dkr.ecr.ap-south-1.amazonaws.com/sample-app:<tag>
+replicas:
+  - name: sample-app
+    count: 1
+patches:
+  - target: { kind: Deployment, name: sample-app }
+    patch: |-
+      - op: replace
+        path: /spec/template/spec/containers/0/env/0/value
+        value: test

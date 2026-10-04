@@ -1,0 +1,21 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: sample-app-helm
+  namespace: argocd
+  finalizers: [resources-finalizer.argocd.argoproj.io]   # deleting the app deletes its resources (and NLB)
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/mubinfshaikh/sandbox.git
+    targetRevision: docker-ec2-asg-loadbalancer
+    path: k8s-eks-deploy/helm/sample-app
+    helm:
+      valuesObject:
+        replicaCount: 1
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: sample-app-helm
+  syncPolicy:
+    automated: { prune: true, selfHeal: true }
+    syncOptions: [CreateNamespace=true]
