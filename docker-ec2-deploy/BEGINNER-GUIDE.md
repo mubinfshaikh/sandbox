@@ -77,12 +77,20 @@ Search **EC2** -> left menu **Security Groups** -> **Create security group**. Us
 
 Leave outbound as default (all traffic).
 
+> **Using your own VPC instead of the default one?** (e.g. made with the "VPC and more" wizard)
+> Its **private** subnets have no internet route unless you pay for a NAT gateway (~$35/month).
+> Without internet the servers can't install Docker/the CodeDeploy agent, and can't reach CodeDeploy, ECR or SSM.
+> For this guide put the ALB **and** the Auto Scaling group in the **public** subnets (route `0.0.0.0/0 -> igw-...`).
+> Check: VPC -> Route tables -> the subnet's table must have a `0.0.0.0/0` route to an `igw-`.
+
 ## Phase 5 - Target group and Load Balancer
 ### 5a. Target group
 1. EC2 -> **Target Groups** -> **Create target group**.
 2. Target type **Instances**. Name `sample-app-tg`. Protocol **HTTP**, port **3000**. VPC default.
 3. Health checks: path `/health`. -> Next.
 4. Do NOT register any targets (the ASG will) -> **Create target group**.
+5. Open the target group -> **Attributes** -> **Edit** -> Deregistration delay **30** seconds -> Save.
+   *Why:* the default is 300 s, and CodeDeploy waits that long per server on every deployment.
 
 ### 5b. Application Load Balancer
 1. EC2 -> **Load Balancers** -> **Create load balancer** -> **Application Load Balancer**.
@@ -95,29 +103,35 @@ Leave outbound as default (all traffic).
 ## Phase 6 - Launch template (blueprint for the app servers)
 1. EC2 -> **Launch Templates** -> **Create launch template**. Name `sample-app-lt`.
 2. Tick "Provide guidance... Auto Scaling" if shown.
-3. **AMI**: Quick Start -> **Ubuntu** -> choose **Ubuntu Server 26.04 LTS** (64-bit x86).
-   If 26.04 isn't listed, use "Browse more AMIs", or fall back to **24.04 LTS**.
+3. **AMI**: Quick Start -> **Ubuntu** -> choose **Ubuntu Server 24.04 LTS** (64-bit x86).
+   This guide is tested on 24.04. 26.04 is very new and the CodeDeploy agent may not support it yet.
 4. Instance type: `t3.micro` (or `t2.micro` if free-tier).
 5. Key pair: "Don't include" is fine (we can use Session Manager instead of SSH).
-6. Security groups: select **app-sg**.
+6. Network settings: select **app-sg**. If you use your own VPC: **Advanced network configuration** ->
+   **Auto-assign public IP: Enable** (the wizard's public subnets don't assign one by themselves).
 7. **Advanced details**:
-   - IAM instance profile: `app-ec2-role`
-   - User data: paste the contents of `user-data.sh` from this folder, after changing
-     `REGION=us-east-1` to `REGION=ap-south-1`.
+    - IAM instance profile: `app-ec2-role`
+    - **User data (required)**: paste the whole of `user-data.sh` from this folder. Check `REGION=ap-south-1` at the top.
+      This installs Docker, the AWS CLI and the **CodeDeploy agent**. If you skip it, every deployment fails with
+      *"CodeDeploy agent was not able to receive the lifecycle event"*.
 8. **Create launch template**.
 
-> Servers need internet access to install Docker. Default-VPC subnets give public IPs automatically, so this works.
+> Servers need internet access to install Docker and the agent. Default-VPC subnets (and your own VPC's **public** subnets) have it; private subnets don't.
 
 ## Phase 7 - Auto Scaling Group
 1. EC2 -> **Auto Scaling Groups** -> **Create Auto Scaling group**. Name `sample-app-asg`.
 2. Launch template: `sample-app-lt` -> Next.
 3. Network: default VPC, select **2+ subnets** in different AZs -> Next.
+   Own VPC: pick the **public** subnets only, never the private ones (see the note in Phase 4).
 4. Load balancing: **Attach to an existing load balancer** -> **Choose from your load balancer target groups** -> `sample-app-tg`.
 5. Health checks: **tick EC2 only for now** (do NOT tick ELB yet). Grace period 300 s.
    *Why:* before the first deployment there's no app on the servers, so the ALB check fails and ASG would keep killing them. Switch to ELB after Phase 10 works.
 6. Group size: desired **2**, min **2**, max **4**. Scaling policy: **Target tracking**, CPU 50%.
 7. Next -> Next -> **Create Auto Scaling group**.
 8. Wait ~3 minutes. EC2 -> Instances: you should see 2 new instances **Running**.
+9. Check the agent before the first deploy: select an instance -> **Connect** -> **Session Manager** and run
+   `sudo systemctl is-active codedeploy-agent docker` -> both must say `active`.
+   If Session Manager can't connect, the server has no internet (wrong subnet) - fix that first.
 
 ## Phase 8 - CodeDeploy
 ### 8a. Application
@@ -182,6 +196,7 @@ Commit and push to GitHub.
 ## Phase 10 - First deployment
 1. Jenkins -> `sample-app` -> **Build Now**. Open **Console Output**. Stages: Build -> Push -> Bundle -> Deploy.
 2. CodeDeploy console -> Deployments: watch it go to **Succeeded** (it updates one server at a time).
+   The **BlockTraffic** step waits for the deregistration delay (30 s after Phase 5a step 5, 5 minutes if you skipped it). This is normal, not stuck.
 3. EC2 -> Target Groups -> `sample-app-tg` -> Targets: both **healthy**.
 4. Open `http://<ALB-DNS-name>/` in a browser. Refresh a few times; the hostname should switch between the two servers.
 5. Now switch the ASG health check to ELB: ASG -> Details -> Health checks -> Edit -> tick **ELB**.
@@ -193,6 +208,9 @@ Commit and push to GitHub.
 | Jenkins: `docker: permission denied` | `sudo usermod -aG docker jenkins` then `sudo systemctl restart jenkins` |
 | Jenkins: `Unable to locate credentials` | Instance profile `jenkins-ec2-role` not attached (EC2 -> Actions -> Security -> Modify IAM role) |
 | ECR push denied | Role missing `AmazonEC2ContainerRegistryPowerUser`, or wrong region/account in Jenkinsfile |
+| Deployment fails: *"CodeDeploy agent was not able to receive the lifecycle event"* | The agent isn't running or can't reach AWS. 1) Launch template has no user data (Phase 6 step 7). 2) ASG uses private subnets with no NAT (Phase 4 note). Fix the launch template / ASG subnets, then ASG -> **Instance refresh** to replace the servers |
+| EC2 -> Actions -> Monitor -> **Get system log** shows `SSM Agent ... send request failed` | Server has no internet: subnet has no `0.0.0.0/0` route to an internet gateway, or no public IP |
+| Jenkins Deploy stage "stuck" ~5 min, ALB shows 503 | Deregistration delay still 300 s (Phase 5a step 5). 503 during a deploy = deployment setting `AllAtOnce`; use `OneAtATime` (Phase 8b step 6) |
 | CodeDeploy stuck / "agent not found" | On the server: `sudo systemctl status codedeploy-agent`; log `/var/log/aws/codedeploy-agent/codedeploy-agent.log`; check user-data ran: `/var/log/cloud-init-output.log` |
 | Agent won't install on Ubuntu 26.04 | New OS may be unsupported; use Ubuntu 24.04 AMI, or build the agent from the aws-codedeploy-agent GitHub source |
 | Script failed in hook | `/opt/codedeploy-agent/deployment-root/<dep-id>/<group-id>/logs/scripts.log` |
