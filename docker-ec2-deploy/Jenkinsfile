@@ -1,0 +1,51 @@
+// Jenkins job "Script Path": docker-ec2-deploy/Jenkinsfile
+pipeline {
+  agent any
+  environment {
+    REGION  = 'us-east-1'            // change
+    ACCOUNT = '123456789012'         // change
+    BUCKET  = 'myapp-codedeploy-bundles'
+    CD_APP  = 'sample-app'
+    CD_DG   = 'sample-app-dg'
+    REPO    = "${ACCOUNT}.dkr.ecr.${REGION}.amazonaws.com/sample-app"
+  }
+  stages {
+    stage('Build') {
+      steps {
+        script { env.TAG = "${env.BUILD_NUMBER}-${env.GIT_COMMIT.take(7)}" }
+        dir('docker-ec2-deploy') { sh 'docker build -t $REPO:$TAG -t $REPO:latest .' }
+      }
+    }
+    stage('Push') {
+      steps {
+        sh '''
+          aws ecr get-login-password --region $REGION | docker login --username AWS --password-stdin $ACCOUNT.dkr.ecr.$REGION.amazonaws.com
+          docker push $REPO:$TAG
+          docker push $REPO:latest
+        '''
+      }
+    }
+    stage('Bundle') {
+      steps {
+        dir('docker-ec2-deploy') {
+          sh '''
+            echo "IMAGE=$REPO:$TAG" > image.env
+            zip -r bundle-$TAG.zip appspec.yml scripts image.env
+            aws s3 cp bundle-$TAG.zip s3://$BUCKET/bundle-$TAG.zip --region $REGION
+          '''
+        }
+      }
+    }
+    stage('Deploy') {
+      steps {
+        sh '''
+          ID=$(aws deploy create-deployment --region $REGION \
+            --application-name $CD_APP --deployment-group-name $CD_DG \
+            --s3-location bucket=$BUCKET,key=bundle-$TAG.zip,bundleType=zip \
+            --query deploymentId --output text)
+          aws deploy wait deployment-successful --deployment-id $ID --region $REGION
+        '''
+      }
+    }
+  }
+}

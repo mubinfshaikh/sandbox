@@ -1,0 +1,18 @@
+version: 0.0
+os: linux
+files:
+  - source: /
+    destination: /opt/app
+hooks:
+  ApplicationStop:
+    - location: scripts/stop.sh
+      timeout: 60
+  BeforeInstall:
+    - location: scripts/pull.sh
+      timeout: 300
+  ApplicationStart:
+    - location: scripts/start.sh
+      timeout: 120
+  ValidateService:
+    - location: scripts/health.sh
+      timeout: 60
