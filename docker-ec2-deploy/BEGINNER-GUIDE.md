@@ -87,7 +87,9 @@ Leave outbound as default (all traffic).
 ### 5a. Target group
 1. EC2 -> **Target Groups** -> **Create target group**.
 2. Target type **Instances**. Name `sample-app-tg`. Protocol **HTTP**, port **3000**. VPC default.
-3. Health checks: path `/health`. -> Next.
+3. Health checks: path `/health`. Open **Advanced health check settings**: Healthy threshold **2**, Interval **10** seconds
+   (leave Unhealthy threshold 2, Timeout 5). -> Next.
+   *Why:* the default (5 checks x 30 s) makes CodeDeploy wait ~2.5 minutes per server before sending traffic back.
 4. Do NOT register any targets (the ASG will) -> **Create target group**.
 5. Open the target group -> **Attributes** -> **Edit** -> Deregistration delay **30** seconds -> Save.
    *Why:* the default is 300 s, and CodeDeploy waits that long per server on every deployment.
@@ -196,7 +198,9 @@ Commit and push to GitHub.
 ## Phase 10 - First deployment
 1. Jenkins -> `sample-app` -> **Build Now**. Open **Console Output**. Stages: Build -> Push -> Bundle -> Deploy.
 2. CodeDeploy console -> Deployments: watch it go to **Succeeded** (it updates one server at a time).
-   The **BlockTraffic** step waits for the deregistration delay (30 s after Phase 5a step 5, 5 minutes if you skipped it). This is normal, not stuck.
+   Per server: **BlockTraffic** waits for the deregistration delay (~30 s), then stop/pull/start (~15 s), then **AllowTraffic**
+   waits until the load balancer marks it healthy (~20 s with the Phase 5a settings). About 2 minutes for 2 servers.
+   If you kept the defaults it takes ~7 minutes. That is slow, not stuck.
 3. EC2 -> Target Groups -> `sample-app-tg` -> Targets: both **healthy**.
 4. Open `http://<ALB-DNS-name>/` in a browser. Refresh a few times; the hostname should switch between the two servers.
 5. Now switch the ASG health check to ELB: ASG -> Details -> Health checks -> Edit -> tick **ELB**.
@@ -210,7 +214,8 @@ Commit and push to GitHub.
 | ECR push denied | Role missing `AmazonEC2ContainerRegistryPowerUser`, or wrong region/account in Jenkinsfile |
 | Deployment fails: *"CodeDeploy agent was not able to receive the lifecycle event"* | The agent isn't running or can't reach AWS. 1) Launch template has no user data (Phase 6 step 7). 2) ASG uses private subnets with no NAT (Phase 4 note). Fix the launch template / ASG subnets, then ASG -> **Instance refresh** to replace the servers |
 | EC2 -> Actions -> Monitor -> **Get system log** shows `SSM Agent ... send request failed` | Server has no internet: subnet has no `0.0.0.0/0` route to an internet gateway, or no public IP |
-| Jenkins Deploy stage "stuck" ~5 min, ALB shows 503 | Deregistration delay still 300 s (Phase 5a step 5). 503 during a deploy = deployment setting `AllAtOnce`; use `OneAtATime` (Phase 8b step 6) |
+| Jenkins Deploy stage "stuck" 5-10 min | Target group still on defaults: deregistration delay 300 s (Phase 5a step 5), health check 30 s x 5 (Phase 5a step 3) |
+| ALB shows 503 during a deploy | Deployment setting is `AllAtOnce` (both servers out together); use `OneAtATime` (Phase 8b step 6) |
 | CodeDeploy stuck / "agent not found" | On the server: `sudo systemctl status codedeploy-agent`; log `/var/log/aws/codedeploy-agent/codedeploy-agent.log`; check user-data ran: `/var/log/cloud-init-output.log` |
 | Agent won't install on Ubuntu 26.04 | New OS may be unsupported; use Ubuntu 24.04 AMI, or build the agent from the aws-codedeploy-agent GitHub source |
 | Script failed in hook | `/opt/codedeploy-agent/deployment-root/<dep-id>/<group-id>/logs/scripts.log` |
